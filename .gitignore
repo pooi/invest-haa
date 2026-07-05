@@ -286,6 +286,9 @@ celerybeat.pid
 
 # Environments
 .env
+
+# HAA runtime state
+/data/
 .venv
 env/
 venv/
