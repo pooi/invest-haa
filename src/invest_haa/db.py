@@ -250,6 +250,13 @@ class Repository:
                 is not None
             )
 
+    def target_allocations(self, signal_month: str) -> dict[str, Decimal]:
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(TargetAllocationModel).where(TargetAllocationModel.signal_month == signal_month)
+            ).all()
+            return {row.symbol: Decimal(row.target_weight) for row in rows}
+
     def save_completed_run(self, strategy: StrategyResult, plan: PortfolioPlan, late: bool, message: str) -> str:
         run_id = str(uuid.uuid4())
         holdings_json = json.dumps(

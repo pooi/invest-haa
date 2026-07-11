@@ -7,7 +7,7 @@ UNIVERSE = tuple(dict.fromkeys((CANARY, *OFFENSIVE, *DEFENSIVE)))
 LOOKBACKS = (1, 3, 6, 12)
 TOP_N = 4
 
-SLOT_WEIGHT = Decimal("0.25")
+SLOT_WEIGHT = Decimal("1") / Decimal(TOP_N)
 MIN_TOLERANCE_USD = Decimal("5")
 TOLERANCE_RATE = Decimal("0.0025")
 CASH_BUFFER_RATE = Decimal("0.005")

@@ -7,8 +7,9 @@ from zoneinfo import ZoneInfo
 from .config import Settings
 from .constants import UNIVERSE
 from .db import Repository
-from .domain import PortfolioPlan, PriceQuote, StrategyResult
+from .domain import MonthlyPerformance, PortfolioPlan, PriceQuote, StrategyResult
 from .market_data import MarketDataService
+from .performance import calculate_monthly_performance
 from .portfolio import build_portfolio_plan
 from .strategy import calculate_strategy
 from .strategy import InsufficientHistory, shift_month
@@ -65,6 +66,10 @@ class HaaService:
         self.market_data.validate_universe()
         closes, dates = self.market_data.monthly_closes(signal_month)
         strategy = calculate_strategy(closes, dates, signal_month)
+        previous_weights = self.repository.target_allocations(shift_month(signal_month, -1))
+        performance = (
+            calculate_monthly_performance(closes, signal_month, previous_weights) if previous_weights else None
+        )
         expected_signal_date = self.expected_month_end(signal_month)
         if strategy.signal_date != expected_signal_date:
             raise ValueError(
@@ -97,7 +102,13 @@ class HaaService:
             us_commission_rate_percent=commission_rate,
             sellable_quantities=sellable,
         )
-        message = format_slack_message(strategy, plan, late, live=self.settings.live_trading)
+        message = format_slack_message(
+            strategy,
+            plan,
+            late,
+            live=self.settings.live_trading,
+            performance=performance,
+        )
         run_id = self.repository.save_completed_run(strategy, plan, late, message)
         return run_id, strategy, plan
 
@@ -144,7 +155,14 @@ class HaaService:
         )
 
 
-def format_slack_message(strategy: StrategyResult, plan: PortfolioPlan, late: bool, *, live: bool = False) -> str:
+def format_slack_message(
+    strategy: StrategyResult,
+    plan: PortfolioPlan,
+    late: bool,
+    *,
+    live: bool = False,
+    performance: MonthlyPerformance | None = None,
+) -> str:
     regime = "Risk-On" if strategy.risk_on else "Risk-Off"
     weights = ", ".join(
         f"{symbol} {weight * Decimal('100')}%" for symbol, weight in sorted(strategy.target_weights.items())
@@ -154,8 +172,24 @@ def format_slack_message(strategy: StrategyResult, plan: PortfolioPlan, late: bo
         detail = f"{trade.quantity}주" if trade.side == "SELL" else f"${trade.order_amount}"
         trades.append(f"{trade.sequence}. {trade.side} {trade.symbol} {detail}")
     trade_text = "\n".join(trades) if trades else "거래 없음"
+    if performance is None:
+        performance_text = "월간 실적: 이전 목표비중 없음 (다음 달부터 산출)"
+    else:
+        contribution_text = ", ".join(
+            f"{symbol} {contribution * Decimal('100'):+.2f}%p"
+            for symbol, contribution in sorted(
+                performance.contributions.items(),
+                key=lambda item: (-abs(item[1]), item[0]),
+            )
+        )
+        performance_text = (
+            f"월간 실적: {performance.start_month}→{performance.end_month} "
+            f"{performance.total_return * Decimal('100'):+.2f}% (월말 수정종가 기준)\n"
+            f"기여도: {contribution_text}"
+        )
     return (
         f"[HAA {'LIVE' if live else 'DRY-RUN'}] {strategy.signal_month}{' (late)' if late else ''}\n"
+        f"{performance_text}\n"
         f"국면: {regime} / 방어자산: {strategy.best_defensive}\n"
         f"목표: {weights}\n"
         f"운용액: ${plan.investable_capital:.2f} / 현금버퍼: ${plan.cash_buffer:.2f}\n"

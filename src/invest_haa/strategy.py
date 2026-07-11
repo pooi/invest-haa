@@ -4,7 +4,7 @@ from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 
-from .constants import CANARY, DEFENSIVE, LOOKBACKS, OFFENSIVE, SLOT_WEIGHT, UNIVERSE
+from .constants import CANARY, DEFENSIVE, LOOKBACKS, OFFENSIVE, SLOT_WEIGHT, TOP_N, UNIVERSE
 from .domain import SignalScore, StrategyResult
 
 
@@ -62,7 +62,7 @@ def calculate_strategy(
         target_weights = {best_defensive: Decimal("1")}
     else:
         target_weights: dict[str, Decimal] = {}
-        for symbol in offensive_ranked[:4]:
+        for symbol in offensive_ranked[:TOP_N]:
             selected = symbol if scores[symbol].momentum > 0 else best_defensive
             target_weights[selected] = target_weights.get(selected, Decimal("0")) + SLOT_WEIGHT
 

@@ -67,6 +67,15 @@ class StrategyResult:
 
 
 @dataclass(frozen=True)
+class MonthlyPerformance:
+    start_month: str
+    end_month: str
+    total_return: Decimal
+    asset_returns: dict[str, Decimal]
+    contributions: dict[str, Decimal]
+
+
+@dataclass(frozen=True)
 class PlannedTrade:
     sequence: int
     symbol: str

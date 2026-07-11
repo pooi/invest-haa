@@ -65,6 +65,40 @@ def test_service_creates_one_persisted_plan_and_outbox(settings):
         service.create_plan("2026-06")
 
 
+def test_second_month_slack_message_includes_strategy_performance(settings):
+    repository = Repository(settings.database_url)
+    repository.create_schema()
+    for symbol in UNIVERSE:
+        rows = []
+        for index, offset in enumerate(reversed(range(14))):
+            month = shift_month("2026-07", -offset)
+            year, number = map(int, month.split("-"))
+            day = 31 if month == "2026-07" else 30 if month == "2026-06" else 28
+            price = Decimal(100 + index)
+            rows.append(
+                Candle(
+                    symbol,
+                    datetime(year, number, day, 20, tzinfo=UTC),
+                    price,
+                    price,
+                    price,
+                    price,
+                    Decimal("1"),
+                    "USD",
+                )
+            )
+        repository.upsert_candles(rows)
+
+    service = HaaService(settings, FakeClient(), repository)  # type: ignore[arg-type]
+    service.create_plan("2026-06")
+    service.create_plan("2026-07")
+
+    notifications = repository.pending_notifications()
+    assert "월간 실적: 이전 목표비중 없음" in notifications[0].payload
+    assert "월간 실적: 2026-06→2026-07" in notifications[1].payload
+    assert "기여도:" in notifications[1].payload
+
+
 def test_service_rejects_a_common_candle_that_is_not_the_market_month_end(settings):
     repository = Repository(settings.database_url)
     repository.create_schema()
