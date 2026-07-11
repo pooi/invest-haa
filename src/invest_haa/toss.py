@@ -11,7 +11,7 @@ from typing import Any, Callable
 import httpx
 
 from .config import TossConnectionSettings
-from .domain import Candle, Holding, MarketCalendar, MarketDay, PriceQuote
+from .domain import BrokerOrder, Candle, Holding, MarketCalendar, MarketDay, PriceQuote
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +91,15 @@ class TossClient:
                 return self._token
             raise RuntimeError("Toss token request exhausted retries")
 
-    def _get(self, path: str, *, params: dict[str, Any] | None = None, account: bool = False) -> Any:
-        if path.startswith("/api/v1/orders"):
-            raise AssertionError("order endpoints are forbidden in dry-run mode")
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        account: bool = False,
+    ) -> Any:
         refreshed = False
         last_transport_error: Exception | None = None
         for attempt in range(self.settings.max_api_attempts):
@@ -104,7 +110,7 @@ class TossClient:
                     raise ValueError("TOSS_ACCOUNT_SEQ is required for this endpoint")
                 headers["X-Tossinvest-Account"] = str(account_seq)
             try:
-                response = self._client.get(path, params=params, headers=headers)
+                response = self._client.request(method, path, params=params, json=json, headers=headers)
             except httpx.TransportError as exc:
                 last_transport_error = exc
                 if attempt + 1 >= self.settings.max_api_attempts:
@@ -117,6 +123,11 @@ class TossClient:
             if response.status_code == 401 and error_code == "expired-token" and not refreshed:
                 self._access_token(force=True)
                 refreshed = True
+                continue
+            if response.status_code == 409 and error_code == "request-in-progress":
+                if attempt + 1 >= self.settings.max_api_attempts:
+                    self._raise(response)
+                self._sleep(self._backoff(attempt))
                 continue
             if response.status_code == 429:
                 if attempt + 1 >= self.settings.max_api_attempts:
@@ -133,6 +144,12 @@ class TossClient:
                 self._raise(response)
             return response.json().get("result")
         raise RuntimeError("Toss API request exhausted retries") from last_transport_error
+
+    def _get(self, path: str, *, params: dict[str, Any] | None = None, account: bool = False) -> Any:
+        return self._request("GET", path, params=params, account=account)
+
+    def _post(self, path: str, *, json: dict[str, Any] | None = None, account: bool = False) -> Any:
+        return self._request("POST", path, json=json, account=account)
 
     @staticmethod
     def _backoff(attempt: int) -> float:
@@ -246,6 +263,61 @@ class TossClient:
             previous_business_day=_market_day(result["previousBusinessDay"]),
             next_business_day=_market_day(result["nextBusinessDay"]),
         )
+
+    def create_market_order(
+        self,
+        *,
+        client_order_id: str,
+        symbol: str,
+        side: str,
+        quantity: Decimal | None = None,
+        order_amount: Decimal | None = None,
+    ) -> str:
+        if symbol not in {"SPY", "IWM", "VEA", "VWO", "VNQ", "DBC", "IEF", "TLT", "TIP", "BIL"}:
+            raise ValueError(f"live order symbol is outside the HAA allowlist: {symbol}")
+        if (quantity is None) == (order_amount is None):
+            raise ValueError("exactly one of quantity or order_amount is required")
+        payload = {
+            "clientOrderId": client_order_id,
+            "symbol": symbol,
+            "side": side,
+            "orderType": "MARKET",
+        }
+        if quantity is not None:
+            payload["quantity"] = str(quantity)
+        else:
+            payload["orderAmount"] = str(order_amount)
+        result = self._post("/api/v1/orders", json=payload, account=True)
+        return str(result["orderId"])
+
+    def open_order_symbols(self) -> set[str]:
+        result = self._get("/api/v1/orders", params={"status": "OPEN"}, account=True)
+        return {str(item["symbol"]) for item in result["orders"]}
+
+    def order(self, order_id: str) -> BrokerOrder:
+        result = self._get(f"/api/v1/orders/{order_id}", account=True)
+        execution = result["execution"]
+        return BrokerOrder(
+            order_id=str(result["orderId"]),
+            symbol=str(result["symbol"]),
+            side=str(result["side"]),
+            status=str(result["status"]),
+            quantity=_decimal(result["quantity"]),
+            order_amount=_decimal(result["orderAmount"]) if result.get("orderAmount") is not None else None,
+            filled_quantity=_decimal(execution["filledQuantity"]),
+            average_filled_price=(
+                _decimal(execution["averageFilledPrice"])
+                if execution.get("averageFilledPrice") is not None
+                else None
+            ),
+            filled_amount=_decimal(execution["filledAmount"]) if execution.get("filledAmount") is not None else None,
+            commission=_decimal(execution["commission"]) if execution.get("commission") is not None else None,
+            filled_at=_datetime(execution["filledAt"]) if execution.get("filledAt") else None,
+        )
+
+    def cancel_order(self, order_id: str) -> str:
+        result = self._post(f"/api/v1/orders/{order_id}/cancel", account=True)
+        return str(result["orderId"])
 
 
 def _decimal(value: Any) -> Decimal:

@@ -47,8 +47,10 @@ def build_portfolio_plan(
     holdings_value = sum(current_values.values(), Decimal("0"))
     gross_capital = min(capital_ceiling, holdings_value + buying_power)
     commission_rate = us_commission_rate_percent / Decimal("100")
-    estimated_commission = gross_capital * commission_rate
-    cash_buffer = max(estimated_commission, gross_capital * CASH_BUFFER_RATE)
+    # Reserve enough cash for a worst-case full portfolio rotation (sell + buy).
+    # The actual estimate is recalculated from the resulting trade plan below.
+    maximum_commission = gross_capital * Decimal("2") * commission_rate
+    cash_buffer = max(maximum_commission, gross_capital * CASH_BUFFER_RATE)
     investable = max(Decimal("0"), gross_capital - cash_buffer)
     tolerance = max(MIN_TOLERANCE_USD, investable * TOLERANCE_RATE)
 
@@ -70,6 +72,26 @@ def build_portfolio_plan(
             amount = floor_amount(delta)
             if amount > 0:
                 buy_candidates.append(PlannedTrade(0, symbol, "BUY", current, target, delta, order_amount=amount))
+
+    planned_sell_proceeds = sum(
+        ((trade.quantity or Decimal("0")) * quotes[trade.symbol].last_price for trade in sell_candidates),
+        Decimal("0"),
+    )
+    planned_buy_amount = sum(
+        (trade.order_amount or Decimal("0") for trade in buy_candidates),
+        Decimal("0"),
+    )
+    planned_turnover = planned_sell_proceeds + planned_buy_amount
+    estimated_commission = planned_turnover * commission_rate
+    available_for_buys = buying_power + planned_sell_proceeds
+    required_for_buys = planned_buy_amount + estimated_commission
+    if required_for_buys > available_for_buys:
+        shortfall = required_for_buys - available_for_buys
+        raise ValueError(
+            "portfolio plan is not executable: "
+            f"buy orders and estimated commission exceed available USD by {shortfall:.2f}; "
+            "check sellable quantities or reduce the capital ceiling"
+        )
 
     ordered: list[PlannedTrade] = []
     for sequence, trade in enumerate((*sell_candidates, *buy_candidates), 1):

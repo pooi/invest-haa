@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import httpx
 import pytest
 
@@ -97,12 +99,23 @@ def test_expired_token_is_refreshed_once(settings):
     assert token_count == 2
 
 
-def test_order_endpoint_is_forbidden(settings):
-    client = httpx.Client(
-        base_url=settings.toss_base_url, transport=httpx.MockTransport(lambda r: response(r, 500, {}))
+def test_market_order_uses_account_header_and_idempotency_key(settings):
+    def handler(request: httpx.Request):
+        if request.url.path == "/oauth2/token":
+            return response(request, 200, {"access_token": "token", "expires_in": 86400})
+        assert request.method == "POST"
+        assert request.headers["X-Tossinvest-Account"] == "1"
+        assert request.read().decode().count('"clientOrderId":"haa-202606-01-SPY-sell"') == 1
+        return response(request, 200, {"result": {"orderId": "order-1"}})
+
+    client = httpx.Client(base_url=settings.toss_base_url, transport=httpx.MockTransport(handler))
+    order_id = TossClient(settings, client=client).create_market_order(
+        client_order_id="haa-202606-01-SPY-sell",
+        symbol="SPY",
+        side="SELL",
+        quantity=Decimal("1.5"),
     )
-    with pytest.raises(AssertionError, match="forbidden"):
-        TossClient(settings, client=client)._get("/api/v1/orders")
+    assert order_id == "order-1"
 
 
 def test_api_error_captures_request_id(settings):

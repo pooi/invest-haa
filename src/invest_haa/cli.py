@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from .config import Settings, TossConnectionSettings
 from .daemon import HaaDaemon
 from .db import Repository
+from .execution import LiveExecutor
 from .lock import ProcessLock
 from .logging_config import configure_logging
 from .notification import SlackNotifier
@@ -17,7 +18,7 @@ from .service import HaaService
 from .strategy import month_end
 from .toss import TossClient
 
-app = typer.Typer(help="HAA Toss OpenAPI dry-run planner", no_args_is_help=True)
+app = typer.Typer(help="HAA Toss OpenAPI monthly rebalancer", no_args_is_help=True)
 
 
 def _settings() -> Settings:
@@ -88,7 +89,7 @@ def plan(
     signal_month: str = typer.Option(..., help="Signal month in YYYY-MM form"),
     late: bool = typer.Option(False, help="Mark this manually generated plan as late"),
 ) -> None:
-    """Create and persist a read-only rebalance plan."""
+    """Create a rebalance plan and execute it when LIVE_TRADING=true."""
     try:
         month_end(signal_month)
     except (ValueError, IndexError) as exc:
@@ -96,6 +97,11 @@ def plan(
     with _api_context() as (settings, repository, client):
         service = HaaService(settings, client, repository)
         run_id, strategy, portfolio_plan = service.create_plan(signal_month, late=late)
+        executed_orders = []
+        if settings.live_trading:
+            executed_orders = LiveExecutor(settings, client, repository).execute(
+                run_id, strategy.signal_month, portfolio_plan
+            )
         notifier = SlackNotifier(settings, repository)
         try:
             sent, failed = notifier.flush()
@@ -110,6 +116,8 @@ def plan(
                     "targetWeights": {key: str(value) for key, value in strategy.target_weights.items()},
                     "investableCapital": str(portfolio_plan.investable_capital),
                     "plannedTrades": len(portfolio_plan.trades),
+                    "mode": "LIVE" if settings.live_trading else "DRY_RUN",
+                    "executedOrders": len(executed_orders),
                     "notificationsSent": sent,
                     "notificationsFailed": failed,
                 },
@@ -121,7 +129,7 @@ def plan(
 
 @app.command()
 def daemon() -> None:
-    """Run the single-instance monthly planning daemon."""
+    """Run the single-instance monthly rebalancing daemon."""
     settings = _settings()
     repository = _repository(settings)
     with ProcessLock(settings.lock_path), TossClient(settings) as client:
@@ -134,7 +142,7 @@ def daemon() -> None:
 
 @app.command()
 def runs(limit: int = typer.Option(20, min=1, max=100)) -> None:
-    """List persisted dry-run executions without calling Toss API."""
+    """List persisted executions without calling Toss API."""
     settings = _settings()
     repository = _repository(settings)
     payload = [
@@ -153,7 +161,7 @@ def runs(limit: int = typer.Option(20, min=1, max=100)) -> None:
 
 @app.command("show-run")
 def show_run(run_id: str) -> None:
-    """Show one persisted dry-run and its ordered virtual trades."""
+    """Show one persisted run and its ordered trades."""
     settings = _settings()
     repository = _repository(settings)
     row = repository.get_run(run_id)
@@ -183,6 +191,20 @@ def show_run(run_id: str) -> None:
                 "deltaValue": trade.delta_value,
             }
             for trade in sorted(row.trades, key=lambda trade: trade.sequence)
+        ],
+        "liveOrders": [
+            {
+                "sequence": order.sequence,
+                "clientOrderId": order.client_order_id,
+                "brokerOrderId": order.broker_order_id,
+                "symbol": order.symbol,
+                "side": order.side,
+                "status": order.status,
+                "filledQuantity": order.filled_quantity,
+                "filledAmount": order.filled_amount,
+                "commission": order.commission,
+            }
+            for order in repository.live_orders(run_id)
         ],
     }
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))

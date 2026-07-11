@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -39,7 +39,13 @@ class HaaService:
         history_error = None
         try:
             closes, dates = self.market_data.monthly_closes(signal_month)
-            calculate_strategy(closes, dates, signal_month)
+            strategy = calculate_strategy(closes, dates, signal_month)
+            expected_signal_date = self.expected_month_end(signal_month)
+            if strategy.signal_date != expected_signal_date:
+                raise ValueError(
+                    f"incomplete signal month {signal_month}: latest common candle is "
+                    f"{strategy.signal_date}, expected US market month-end {expected_signal_date}"
+                )
         except (InsufficientHistory, ValueError) as exc:
             history_error = str(exc)
         return {
@@ -59,6 +65,12 @@ class HaaService:
         self.market_data.validate_universe()
         closes, dates = self.market_data.monthly_closes(signal_month)
         strategy = calculate_strategy(closes, dates, signal_month)
+        expected_signal_date = self.expected_month_end(signal_month)
+        if strategy.signal_date != expected_signal_date:
+            raise ValueError(
+                f"incomplete signal month {signal_month}: latest common candle is "
+                f"{strategy.signal_date}, expected US market month-end {expected_signal_date}"
+            )
 
         holdings = self.client.holdings()
         quotes = self.client.prices(UNIVERSE)
@@ -90,12 +102,20 @@ class HaaService:
             us_commission_rate_percent=commission_rate,
             sellable_quantities=sellable,
         )
-        message = format_slack_message(strategy, plan, late)
+        message = format_slack_message(strategy, plan, late, live=self.settings.live_trading)
         run_id = self.repository.save_completed_run(strategy, plan, late, message)
         return run_id, strategy, plan
 
+    def expected_month_end(self, signal_month: str) -> date:
+        next_month_first = date.fromisoformat(f"{shift_month(signal_month, 1)}-01")
+        calendar_month_end = next_month_first - timedelta(days=1)
+        calendar = self.client.us_market_calendar(calendar_month_end)
+        if calendar.today.regular_start is not None:
+            return calendar.today.date
+        return calendar.previous_business_day.date
 
-def format_slack_message(strategy: StrategyResult, plan: PortfolioPlan, late: bool) -> str:
+
+def format_slack_message(strategy: StrategyResult, plan: PortfolioPlan, late: bool, *, live: bool = False) -> str:
     regime = "Risk-On" if strategy.risk_on else "Risk-Off"
     weights = ", ".join(
         f"{symbol} {weight * Decimal('100')}%" for symbol, weight in sorted(strategy.target_weights.items())
@@ -106,9 +126,9 @@ def format_slack_message(strategy: StrategyResult, plan: PortfolioPlan, late: bo
         trades.append(f"{trade.sequence}. {trade.side} {trade.symbol} {detail}")
     trade_text = "\n".join(trades) if trades else "거래 없음"
     return (
-        f"[HAA DRY-RUN] {strategy.signal_month}{' (late)' if late else ''}\n"
+        f"[HAA {'LIVE' if live else 'DRY-RUN'}] {strategy.signal_month}{' (late)' if late else ''}\n"
         f"국면: {regime} / 방어자산: {strategy.best_defensive}\n"
         f"목표: {weights}\n"
         f"운용액: ${plan.investable_capital:.2f} / 현금버퍼: ${plan.cash_buffer:.2f}\n"
-        f"가상 주문:\n{trade_text}"
+        f"주문 계획:\n{trade_text}"
     )

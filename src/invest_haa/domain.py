@@ -91,4 +91,19 @@ class PortfolioPlan:
     trades: tuple[PlannedTrade, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class BrokerOrder:
+    order_id: str
+    symbol: str
+    side: str
+    status: str
+    quantity: Decimal
+    order_amount: Decimal | None
+    filled_quantity: Decimal
+    average_filled_price: Decimal | None
+    filled_amount: Decimal | None
+    commission: Decimal | None
+    filled_at: datetime | None
+
+
 JsonObject = dict[str, Any]

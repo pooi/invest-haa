@@ -141,6 +141,30 @@ class NotificationOutboxModel(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class LiveOrderModel(Base):
+    __tablename__ = "live_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("rebalance_runs.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    client_order_id: Mapped[str] = mapped_column(String(36), unique=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    side: Mapped[str] = mapped_column(String(4))
+    requested_quantity: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    requested_amount: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="CREATED")
+    filled_quantity: Mapped[str] = mapped_column(String(40), default="0")
+    average_filled_price: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    filled_amount: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    commission: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("run_id", "sequence"),)
+
+
 def make_engine(database_url: str) -> Engine:
     if database_url.startswith("sqlite:///"):
         path = Path(database_url.removeprefix("sqlite:///"))
@@ -311,6 +335,71 @@ class Repository:
             session.add(NotificationOutboxModel(run_id=run_id, payload=message))
         return run_id
 
+    def set_run_state(self, run_id: str, *, mode: str | None = None, status: str | None = None, error: str | None = None) -> None:
+        with self.session() as session:
+            row = session.get(RebalanceRunModel, run_id)
+            if row is None:
+                raise ValueError(f"run not found: {run_id}")
+            if mode is not None:
+                row.mode = mode
+            if status is not None:
+                row.status = status
+            row.error = error
+
+    def create_live_order(
+        self,
+        *,
+        run_id: str,
+        sequence: int,
+        client_order_id: str,
+        symbol: str,
+        side: str,
+        quantity: Decimal | None,
+        amount: Decimal | None,
+    ) -> None:
+        with self.session() as session:
+            session.add(
+                LiveOrderModel(
+                    run_id=run_id,
+                    sequence=sequence,
+                    client_order_id=client_order_id,
+                    symbol=symbol,
+                    side=side,
+                    requested_quantity=str(quantity) if quantity is not None else None,
+                    requested_amount=str(amount) if amount is not None else None,
+                )
+            )
+
+    def live_order_submitted(self, client_order_id: str, broker_order_id: str) -> None:
+        with self.session() as session:
+            row = session.scalar(select(LiveOrderModel).where(LiveOrderModel.client_order_id == client_order_id))
+            if row is None:
+                raise ValueError(f"live order not found: {client_order_id}")
+            row.broker_order_id = broker_order_id
+            row.status = "PENDING"
+            row.updated_at = utcnow()
+
+    def update_live_order(self, client_order_id: str, order: object) -> None:
+        with self.session() as session:
+            row = session.scalar(select(LiveOrderModel).where(LiveOrderModel.client_order_id == client_order_id))
+            if row is None:
+                raise ValueError(f"live order not found: {client_order_id}")
+            row.status = str(getattr(order, "status"))
+            row.filled_quantity = str(getattr(order, "filled_quantity"))
+            row.average_filled_price = _optional_str(getattr(order, "average_filled_price"))
+            row.filled_amount = _optional_str(getattr(order, "filled_amount"))
+            row.commission = _optional_str(getattr(order, "commission"))
+            row.filled_at = getattr(order, "filled_at")
+            row.updated_at = utcnow()
+
+    def live_orders(self, run_id: str) -> list[LiveOrderModel]:
+        with self._sessions() as session:
+            return list(
+                session.scalars(
+                    select(LiveOrderModel).where(LiveOrderModel.run_id == run_id).order_by(LiveOrderModel.sequence)
+                )
+            )
+
     def list_runs(self, limit: int = 20) -> list[RebalanceRunModel]:
         with self._sessions() as session:
             return list(
@@ -356,3 +445,7 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _optional_str(value: object | None) -> str | None:
+    return str(value) if value is not None else None

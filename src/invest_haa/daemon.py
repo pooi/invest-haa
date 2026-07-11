@@ -8,6 +8,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 from .config import Settings
 from .db import Repository
+from .execution import LiveExecutor
 from .market_data import MarketDataService
 from .notification import SlackNotifier
 from .service import HaaService
@@ -54,7 +55,9 @@ class HaaDaemon:
             late = local_date > first_business_day
             logger.info("creating_monthly_plan signal_month=%s late=%s", signal_month, late)
             self.market_data.sync_all()
-            self.service.create_plan(signal_month, late=late)
+            run_id, strategy, plan = self.service.create_plan(signal_month, late=late)
+            if self.settings.live_trading:
+                LiveExecutor(self.settings, self.client, self.repository).execute(run_id, strategy.signal_month, plan)
         self.notifier.flush()
 
     def run(self) -> None:

@@ -1,6 +1,6 @@
 # invest-haa
 
-토스증권 OpenAPI의 조회 전용 API를 이용해 HAA 월간 신호와 가상 주문 계획을 만드는 애플리케이션입니다. 이 버전은 실제 주문 API를 호출하지 않습니다.
+토스증권 OpenAPI를 이용해 HAA 월간 신호와 주문 계획을 만들고, 선택적으로 미국 ETF 실주문을 실행하는 애플리케이션입니다. 기본값은 실제 주문을 제출하지 않는 dry-run입니다.
 
 ## 시작하기
 
@@ -45,7 +45,7 @@ uv run haa validate
 
 ### `haa plan`
 
-지정한 월의 월말 수정종가로 HAA 신호와 목표 비중을 계산합니다. 현재 보유자산, USD 매수 가능 금액, 현재가, 판매 가능 수량과 수수료를 조회하여 매도 우선의 가상 주문 계획을 만들고 SQLite와 Slack에 기록합니다. 실제 주문은 제출하지 않습니다.
+지정한 월의 월말 수정종가로 HAA 신호와 목표 비중을 계산합니다. 현재 보유자산, USD 매수 가능 금액, 현재가, 판매 가능 수량과 수수료를 조회하여 매도 우선 주문 계획을 만들고 SQLite와 Slack에 기록합니다. `LIVE_TRADING=false`이면 계획만 저장하고, `true`이면 매도 체결 후 매수를 순서대로 실행합니다.
 
 ```bash
 uv run haa plan --signal-month 2026-06
@@ -54,9 +54,36 @@ uv run haa plan --signal-month 2026-06 --late
 
 `--late`는 예정 시점보다 늦게 수동 생성한 계획임을 기록할 때 사용합니다. 같은 `signal-month`의 계획은 한 번만 생성할 수 있습니다.
 
+## 실주문 활성화
+
+먼저 dry-run 결과와 계좌를 확인한 뒤 `.env`에 다음 값을 설정합니다.
+
+```dotenv
+LIVE_TRADING=true
+LIVE_TRADING_ACCOUNT_SEQ=123456
+MAX_SINGLE_ORDER_USD=1000
+ORDER_FILL_TIMEOUT_SECONDS=120
+ORDER_STATUS_POLL_SECONDS=2
+```
+
+`LIVE_TRADING_ACCOUNT_SEQ`는 `TOSS_ACCOUNT_SEQ`와 정확히 같아야 합니다. 주문 하나의 예상 금액이 `MAX_SINGLE_ORDER_USD`를 넘으면 전체 실행을 중단합니다. 실주문은 미국 정규장에서만 가능하며 다음 순서를 따릅니다.
+
+```text
+매도 주문 → 매도 체결 확인 → USD 매수 가능 금액 재조회
+→ 매수 주문 → 매수 체결 확인 → 완료
+```
+
+주문이 거부·취소되거나 제한시간 안에 체결되지 않으면 실행 상태를 `HALTED`로 기록합니다. 시간 초과 주문에는 취소 요청을 제출합니다. 자동 환전은 지원하지 않으므로 계좌에 충분한 USD 매수 가능 금액이 있어야 합니다.
+
+```bash
+uv run haa validate
+uv run haa plan --signal-month 2026-06
+uv run haa show-run <RUN_ID>
+```
+
 ### `haa daemon`
 
-5분 간격으로 미국 장 운영시간을 확인하는 단일 인스턴스 데몬을 실행합니다. 다음 달 미국 정규장이 열리면 이전 월의 가격을 동기화하고 아직 처리되지 않은 HAA dry-run 계획을 한 번 생성합니다. 실패한 Slack 알림도 outbox에서 재시도합니다.
+5분 간격으로 미국 장 운영시간을 확인하는 단일 인스턴스 데몬을 실행합니다. 다음 달 미국 정규장이 열리면 이전 월의 가격을 동기화하고 아직 처리되지 않은 HAA 계획을 한 번 생성합니다. `LIVE_TRADING=true`이면 이어서 실주문을 실행합니다. 실패한 Slack 알림도 outbox에서 재시도합니다.
 
 ```bash
 uv run haa daemon
@@ -64,7 +91,7 @@ uv run haa daemon
 
 ### `haa runs`
 
-최근 dry-run 실행 목록을 SQLite에서 조회합니다. 토스증권 API는 호출하지 않습니다. 기본 20건이며 최대 100건까지 지정할 수 있습니다.
+최근 dry-run 또는 실주문 실행 목록을 SQLite에서 조회합니다. 토스증권 API는 호출하지 않습니다. 기본 20건이며 최대 100건까지 지정할 수 있습니다.
 
 ```bash
 uv run haa runs
@@ -73,7 +100,7 @@ uv run haa runs --limit 50
 
 ### `haa show-run`
 
-실행 ID에 해당하는 신호월, 운용금액, 목표 상태와 매도·매수 순서의 가상 주문을 SQLite에서 조회합니다. 토스증권 API는 호출하지 않습니다.
+실행 ID에 해당하는 신호월, 운용금액, 목표 상태, 주문 계획과 실주문 체결 결과를 SQLite에서 조회합니다. 토스증권 API는 호출하지 않습니다.
 
 ```bash
 uv run haa show-run <RUN_ID>

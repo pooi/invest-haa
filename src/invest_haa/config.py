@@ -56,11 +56,22 @@ class Settings(TossConnectionSettings):
 
     poll_interval_seconds: int = Field(default=300, ge=60)
     live_trading: bool = False
+    live_trading_account_seq: int | None = Field(default=None, gt=0)
+    max_single_order_usd: Decimal = Field(default=Decimal("1000"), gt=0)
+    order_fill_timeout_seconds: int = Field(default=120, ge=10, le=900)
+    order_status_poll_seconds: float = Field(default=2, ge=0.5, le=30)
+
+    @field_validator("live_trading_account_seq", mode="before")
+    @classmethod
+    def empty_live_account_is_none(cls, value: object) -> object:
+        return None if value == "" else value
 
     @model_validator(mode="after")
-    def dry_run_only(self) -> "Settings":
-        if self.live_trading:
-            raise ValueError("LIVE_TRADING=true is not supported by this dry-run release")
+    def trading_safety(self) -> "Settings":
+        if self.live_trading and self.live_trading_account_seq != self.toss_account_seq:
+            raise ValueError(
+                "LIVE_TRADING=true requires LIVE_TRADING_ACCOUNT_SEQ to exactly match TOSS_ACCOUNT_SEQ"
+            )
         if not self.slack_webhook_url.get_secret_value().startswith("https://hooks.slack.com/"):
             raise ValueError("SLACK_WEBHOOK_URL must be an HTTPS Slack incoming webhook URL")
         return self
