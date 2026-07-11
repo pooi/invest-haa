@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from invest_haa.constants import UNIVERSE
 from invest_haa.db import Repository
@@ -82,3 +83,33 @@ def test_service_rejects_a_common_candle_that_is_not_the_market_month_end(settin
 
     with pytest.raises(ValueError, match="expected US market month-end"):
         service.create_plan("2026-06")
+
+
+def test_closed_market_accepts_quotes_from_previous_business_day(settings):
+    class WeekendClient(FakeClient):
+        def us_market_calendar(self, target_date):
+            today = MarketDay(target_date, None, None)
+            previous = MarketDay(target_date - timedelta(days=1), None, None)
+            return MarketCalendar(today, previous, previous)
+
+    service = HaaService(settings, WeekendClient(), Repository(settings.database_url))  # type: ignore[arg-type]
+    now = datetime(2026, 7, 11, 12, tzinfo=UTC)
+    previous_close = datetime(2026, 7, 10, 16, tzinfo=ZoneInfo("America/New_York"))
+    quotes = {"SPY": PriceQuote("SPY", previous_close, Decimal("100"), "USD")}
+
+    assert service.stale_quote_symbols(quotes, now) == []
+
+
+def test_open_market_still_rejects_quotes_older_than_max_age(settings):
+    class OpenClient(FakeClient):
+        def us_market_calendar(self, target_date):
+            start = datetime(2026, 7, 10, 13, 30, tzinfo=UTC)
+            end = datetime(2026, 7, 10, 20, tzinfo=UTC)
+            today = MarketDay(target_date, start, end)
+            return MarketCalendar(today, today, today)
+
+    service = HaaService(settings, OpenClient(), Repository(settings.database_url))  # type: ignore[arg-type]
+    now = datetime(2026, 7, 10, 15, tzinfo=UTC)
+    quotes = {"SPY": PriceQuote("SPY", now - timedelta(minutes=16), Decimal("100"), "USD")}
+
+    assert service.stale_quote_symbols(quotes, now) == ["SPY"]

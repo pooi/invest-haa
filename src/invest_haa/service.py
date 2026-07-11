@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from .config import Settings
 from .constants import UNIVERSE
 from .db import Repository
-from .domain import PortfolioPlan, StrategyResult
+from .domain import PortfolioPlan, PriceQuote, StrategyResult
 from .market_data import MarketDataService
 from .portfolio import build_portfolio_plan
 from .strategy import calculate_strategy
@@ -78,12 +78,7 @@ class HaaService:
         if missing_quotes:
             raise ValueError(f"missing quotes: {', '.join(missing_quotes)}")
         now = datetime.now(UTC)
-        stale_quotes = sorted(
-            symbol
-            for symbol, quote in quotes.items()
-            if quote.timestamp is None
-            or abs((now - quote.timestamp.astimezone(UTC)).total_seconds()) > self.settings.max_quote_age_seconds
-        )
+        stale_quotes = self.stale_quote_symbols(quotes, now)
         if stale_quotes:
             raise ValueError(f"missing or stale quotes: {', '.join(stale_quotes)}")
         buying_power = self.client.buying_power_usd()
@@ -113,6 +108,40 @@ class HaaService:
         if calendar.today.regular_start is not None:
             return calendar.today.date
         return calendar.previous_business_day.date
+
+    def stale_quote_symbols(self, quotes: dict[str, PriceQuote], now: datetime) -> list[str]:
+        now = now.astimezone(UTC)
+        new_york_date = now.astimezone(ZoneInfo("America/New_York")).date()
+        calendar = self.client.us_market_calendar(new_york_date)
+        start = calendar.today.regular_start
+        end = calendar.today.regular_end
+        market_is_open = (
+            start is not None
+            and end is not None
+            and start.astimezone(UTC) <= now < end.astimezone(UTC)
+        )
+
+        if market_is_open:
+            return sorted(
+                symbol
+                for symbol, quote in quotes.items()
+                if quote.timestamp is None
+                or abs((now - quote.timestamp.astimezone(UTC)).total_seconds())
+                > self.settings.max_quote_age_seconds
+            )
+
+        latest_expected_date = (
+            calendar.today.date
+            if end is not None and now >= end.astimezone(UTC)
+            else calendar.previous_business_day.date
+        )
+        return sorted(
+            symbol
+            for symbol, quote in quotes.items()
+            if quote.timestamp is None
+            or quote.timestamp.astimezone(ZoneInfo("America/New_York")).date() < latest_expected_date
+            or quote.timestamp.astimezone(UTC) > now + timedelta(minutes=1)
+        )
 
 
 def format_slack_message(strategy: StrategyResult, plan: PortfolioPlan, late: bool, *, live: bool = False) -> str:
