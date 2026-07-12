@@ -15,6 +15,8 @@ uv run haa plan --signal-month 2026-06
 uv run haa daemon
 ```
 
+프로젝트는 `.python-version`에 CPython `3.12.13`을 고정합니다. 기본 설정의 `uv sync`는 이 버전이 없으면 uv 관리 Python을 자동으로 설치하고 해당 버전으로 `.venv`를 구성합니다. 자동 다운로드를 비활성화한 환경에서는 먼저 `uv python install`을 실행해야 합니다.
+
 `haa accounts`는 `TOSS_CLIENT_ID`와 `TOSS_CLIENT_SECRET`만으로 계좌 식별값을 조회합니다. 확인한 `BROKERAGE` 계좌의 `accountSeq`를 `TOSS_ACCOUNT_SEQ`에 설정합니다. 모든 API 사용 명령은 단일 프로세스 잠금을 사용하므로 데몬 실행 중에는 별도로 실행할 수 없습니다.
 
 ## 명령어
