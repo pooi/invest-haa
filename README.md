@@ -120,6 +120,16 @@ uv run haa daemon
 
 명령을 실행한 프로세스와 서버가 계속 살아 있는 동안에는 월간 실행을 자동으로 확인합니다. 터미널 종료나 서버 재부팅에도 자동으로 복구하려면 `systemd`, Docker restart policy 또는 Supervisor 같은 프로세스 관리 도구로 데몬을 등록해야 합니다. 주문 실패로 실행이 `HALTED`된 경우에는 자동 재시도하지 않으므로 Slack 알림과 실행 상태를 확인해야 합니다.
 
+Ubuntu에서 터미널 종료 후에도 데몬을 백그라운드로 유지하려면 제공된 스크립트를 사용합니다.
+
+```bash
+./scripts/start-daemon.sh
+tail -f data/haa-daemon.log
+./scripts/stop-daemon.sh
+```
+
+시작 스크립트는 `data/haa-daemon.pid`에 프로세스 ID를, `data/haa-daemon.log`에 표준 출력과 오류를 기록합니다. 이미 실행 중인 데몬이 있으면 중복 실행하지 않습니다. 종료 스크립트는 PID가 현재 프로젝트에서 실행한 `haa daemon`인지 확인한 후 종료합니다. 두 스크립트는 재부팅 후 자동 시작까지 제공하지 않으므로, 상시 운영 환경에서는 `systemd` 서비스로 등록해야 합니다.
+
 ### `haa runs`
 
 최근 dry-run 또는 실주문 실행 목록을 SQLite에서 조회합니다. 토스증권 API는 호출하지 않습니다. 기본 20건이며 최대 100건까지 지정할 수 있습니다.
